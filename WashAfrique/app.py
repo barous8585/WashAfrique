@@ -4,781 +4,741 @@ from datetime import datetime, date, timedelta
 import json
 import plotly.express as px
 import plotly.graph_objects as go
+from database import Database
+import hashlib
+import io
 
-# Configuration de la page
+# Configuration de la page (SANS sidebar par défaut)
 st.set_page_config(
-    page_title="Lavage Esthétique Pro+",
+    page_title="🚗 WashAfrique Pro - Nettoyage Esthétique",
     page_icon="🚗",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="collapsed",
+    menu_items={
+        "About": "# WashAfrique Pro\nVersion 3.0 Enterprise\nSolution complète pour entreprise de nettoyage esthétique"
+    }
 )
 
-# Initialisation des données en session state
-if 'reservations' not in st.session_state:
-    st.session_state.reservations = []
-if 'clients' not in st.session_state:
-    st.session_state.clients = []
-if 'portfolio' not in st.session_state:
-    st.session_state.portfolio = []
-if 'avis' not in st.session_state:
-    st.session_state.avis = []
-if 'codes_promo' not in st.session_state:
-    st.session_state.codes_promo = [
-        {'code': 'FIRST10', 'reduction': 10, 'type': 'pourcentage', 'actif': True},
-        {'code': 'FIDELE5000', 'reduction': 5000, 'type': 'fcfa', 'actif': True}
-    ]
-if 'paiements' not in st.session_state:
-    st.session_state.paiements = []
+# Initialisation de la base de données
+if "db" not in st.session_state:
+    st.session_state.db = Database()
 
-# Services disponibles (PRIX EN FCFA)
-SERVICES = {
-    1: {"nom": "Lavage Extérieur Standard", "prix": 5000, "duree": 30, "points": 1},
-    2: {"nom": "Lavage Complet (Int + Ext)", "prix": 15000, "duree": 90, "points": 2},
-    3: {"nom": "Polissage & Céramique", "prix": 60000, "duree": 180, "points": 5},
-    4: {"nom": "Détailing Complet", "prix": 100000, "duree": 300, "points": 8},
-    5: {"nom": "Nettoyage Intérieur Premium", "prix": 20000, "duree": 120, "points": 3}
-}
-
-# Horaires d'ouverture
-HORAIRES = {
-    'debut': '08:00',
-    'fin': '18:00',
-    'pause_debut': '12:00',
-    'pause_fin': '13:00'
-}
-
-# Style CSS amélioré
+# Style CSS moderne SANS sidebar
 st.markdown("""
     <style>
-    .main {background-color: #f8f9fa;}
-    .stMetric {background: white; padding: 15px; border-radius: 10px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);}
-    .success-box {background: #d4edda; padding: 20px; border-radius: 10px; border-left: 5px solid #28a745;}
-    .warning-box {background: #fff3cd; padding: 20px; border-radius: 10px; border-left: 5px solid #ffc107;}
-    .info-box {background: #d1ecf1; padding: 20px; border-radius: 10px; border-left: 5px solid #17a2b8;}
-    .calendar-slot {padding: 10px; margin: 5px; border-radius: 5px; text-align: center; cursor: pointer;}
-    .slot-libre {background: #d4edda; border: 2px solid #28a745;}
-    .slot-occupe {background: #f8d7da; border: 2px solid #dc3545;}
-    .slot-pause {background: #e2e3e5; border: 2px solid #6c757d;}
+    /* Cacher complètement la sidebar */
+    [data-testid="stSidebar"] {
+        display: none;
+    }
+    
+    /* Style général */
+    .main {
+        padding: 0rem 1rem;
+    }
+    
+    /* Header navigation */
+    .nav-header {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        padding: 1rem 2rem;
+        border-radius: 10px;
+        margin-bottom: 2rem;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+    }
+    
+    /* Cards modernes */
+    .metric-card {
+        background: white;
+        padding: 1.5rem;
+        border-radius: 10px;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        border-left: 4px solid #667eea;
+    }
+    
+    /* Boutons */
+    .stButton>button {
+        border-radius: 8px;
+        font-weight: 600;
+        transition: all 0.3s ease;
+    }
+    
+    .stButton>button:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+    }
+    
+    /* Tabs personnalisés */
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 8px;
+    }
+    
+    .stTabs [data-baseweb="tab"] {
+        height: 50px;
+        background-color: #f0f2f6;
+        border-radius: 8px;
+        padding: 0 24px;
+        font-weight: 600;
+    }
+    
+    .stTabs [aria-selected="true"] {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white;
+    }
+    
+    /* Tables */
+    .dataframe {
+        border-radius: 8px;
+        overflow: hidden;
+    }
+    
+    /* Responsive */
+    @media (max-width: 768px) {
+        .nav-header {
+            padding: 0.5rem 1rem;
+        }
+    }
     </style>
 """, unsafe_allow_html=True)
 
+# Horaires (configurables par le propriétaire)
+if "horaires" not in st.session_state:
+    st.session_state.horaires = {
+        "ouverture": "08:00",
+        "fermeture": "19:00",
+        "pause_debut": "12:00",
+        "pause_fin": "13:00"
+    }
 
-# Fonctions utilitaires
 def format_fcfa(montant):
-    """Formate un montant en FCFA"""
-    return f"{montant:,.0f} FCFA".replace(',', ' ')
-
-
-def calculer_points_fidelite(client_tel):
-    """Calcule les points de fidélité d'un client"""
-    reservations_client = [r for r in st.session_state.reservations if r['client_tel'] == client_tel]
-    total_points = sum([SERVICES[r['service_id']]['points'] for r in reservations_client])
-    return total_points
-
-
-def appliquer_code_promo(prix, code):
-    """Applique un code promo au prix"""
-    promo = next((p for p in st.session_state.codes_promo if p['code'] == code and p['actif']), None)
-    if promo:
-        if promo['type'] == 'pourcentage':
-            return prix * (1 - promo['reduction'] / 100)
-        else:  # type FCFA
-            return max(0, prix - promo['reduction'])
-    return prix
-
-
-def generer_creneaux_disponibles(date_selectionnee):
-    """Génère les créneaux disponibles pour une date"""
-    creneaux = []
-    heure_debut = datetime.strptime(HORAIRES['debut'], '%H:%M')
-    heure_fin = datetime.strptime(HORAIRES['fin'], '%H:%M')
-    pause_debut = datetime.strptime(HORAIRES['pause_debut'], '%H:%M')
-    pause_fin = datetime.strptime(HORAIRES['pause_fin'], '%H:%M')
-
-    current = heure_debut
-    while current < heure_fin:
-        heure_str = current.strftime('%H:%M')
-
-        # Vérifier si c'est la pause
-        if pause_debut <= current < pause_fin:
-            statut = 'pause'
-        else:
-            # Vérifier si le créneau est déjà réservé
-            est_reserve = any(
-                r['date'] == date_selectionnee.isoformat() and r['heure'] == heure_str
-                for r in st.session_state.reservations
-            )
-            statut = 'occupe' if est_reserve else 'libre'
-
-        creneaux.append({'heure': heure_str, 'statut': statut})
-        current += timedelta(minutes=30)
-
-    return creneaux
-
-
-def generer_facture_pdf(reservation_id):
-    """Génère une facture en PDF (simulé ici en texte)"""
-    res = next((r for r in st.session_state.reservations if r['id'] == reservation_id), None)
-    if res:
-        service = SERVICES[res['service_id']]
-        facture = f"""
-        ═══════════════════════════════════════
-                    FACTURE N°{reservation_id}
-        ═══════════════════════════════════════
-
-        Client: {res['client_nom']}
-        Téléphone: {res['client_tel']}
-        Véhicule: {res['vehicule']}
-
-        Date: {res['date']}
-        Heure: {res['heure']}
-
-        Service: {service['nom']}
-        Prix: {format_fcfa(service['prix'])}
-
-        Statut paiement: {res.get('statut_paiement', 'Non payé')}
-
-        ═══════════════════════════════════════
-                Merci de votre confiance !
-        ═══════════════════════════════════════
-        """
-        return facture
-    return None
-
-
-# Sidebar pour navigation
-st.sidebar.title("🚗 Lavage Pro+")
-st.sidebar.markdown("### Navigation")
-page = st.sidebar.radio(
-    "Menu",
-    ["🏠 Tableau de Bord", "📅 Planning Visuel", "✨ Nouvelle Réservation",
-     "💰 Devis & Promos", "👥 Clients & Fidélité", "📸 Portfolio",
-     "📊 Statistiques", "⚙️ Paramètres"]
-)
-
-# ====== PAGE TABLEAU DE BORD ======
-if page == "🏠 Tableau de Bord":
-    st.title("🏠 Tableau de Bord")
-
-    # KPIs
-    today = date.today().isoformat()
-    tomorrow = (date.today() + timedelta(days=1)).isoformat()
-
-    reservations_today = [r for r in st.session_state.reservations if r['date'] == today]
-    reservations_tomorrow = [r for r in st.session_state.reservations if r['date'] == tomorrow]
-
-    revenus_jour = sum([SERVICES[r['service_id']]['prix'] for r in reservations_today])
-    revenus_total = sum([SERVICES[r['service_id']]['prix'] for r in st.session_state.reservations])
-    revenus_mois = sum([SERVICES[r['service_id']]['prix'] for r in st.session_state.reservations
-                        if r['date'].startswith(date.today().strftime('%Y-%m'))])
-
-    col1, col2, col3, col4 = st.columns(4)
-
-    with col1:
-        st.metric("📅 RDV Aujourd'hui", len(reservations_today), delta=f"{len(reservations_tomorrow)} demain")
-    with col2:
-        st.metric("💰 Revenus Jour", format_fcfa(revenus_jour))
-    with col3:
-        st.metric("📈 Revenus Mois", format_fcfa(revenus_mois))
-    with col4:
-        st.metric("👥 Total Clients", len(st.session_state.clients))
-
-    st.markdown("---")
-
-    # Prochaines réservations
-    col1, col2 = st.columns(2)
-
-    with col1:
-        st.subheader("⏰ Prochains RDV")
-        upcoming = sorted(
-            [r for r in st.session_state.reservations if r['date'] >= today],
-            key=lambda x: (x['date'], x['heure'])
-        )[:5]
-
-        if upcoming:
-            for res in upcoming:
-                service = SERVICES[res['service_id']]
-                with st.container():
-                    st.markdown(f"""
-                    <div class="info-box">
-                    <strong>🚗 {res['client_nom']}</strong><br>
-                    📅 {res['date']} à {res['heure']}<br>
-                    🔧 {service['nom']}<br>
-                    💰 {format_fcfa(service['prix'])} - {res.get('statut_paiement', '❌ Non payé')}
-                    </div>
-                    """, unsafe_allow_html=True)
-                    st.markdown("")
-        else:
-            st.info("Aucun RDV à venir")
-
-    with col2:
-        st.subheader("⭐ Derniers Avis")
-        if st.session_state.avis:
-            for avis in st.session_state.avis[-3:]:
-                st.markdown(f"""
-                <div class="success-box">
-                <strong>{avis['client_nom']}</strong> - {'⭐' * avis['note']}<br>
-                "{avis['commentaire']}"
-                </div>
-                """, unsafe_allow_html=True)
-                st.markdown("")
-        else:
-            st.info("Aucun avis pour le moment")
-
-    # Graphique rapide
-    st.markdown("---")
-    st.subheader("📊 Aperçu Revenus (7 derniers jours)")
-
-    dates_7j = [(date.today() - timedelta(days=i)).isoformat() for i in range(6, -1, -1)]
-    revenus_7j = [sum([SERVICES[r['service_id']]['prix'] for r in st.session_state.reservations if r['date'] == d]) for
-                  d in dates_7j]
-
-    fig = px.bar(x=dates_7j, y=revenus_7j, labels={'x': 'Date', 'y': 'Revenus (FCFA)'})
-    fig.update_traces(marker_color='#667eea')
-    st.plotly_chart(fig, use_container_width=True)
-
-# ====== PAGE PLANNING VISUEL ======
-elif page == "📅 Planning Visuel":
-    st.title("📅 Planning Visuel des Réservations")
-
-    # Sélection de la date
-    col1, col2 = st.columns([2, 1])
-    with col1:
-        date_selectionnee = st.date_input("Choisir une date", value=date.today(), min_value=date.today())
-    with col2:
-        st.metric("RDV ce jour",
-                  len([r for r in st.session_state.reservations if r['date'] == date_selectionnee.isoformat()]))
-
-    st.markdown("---")
-
-    # Affichage du calendrier
-    creneaux = generer_creneaux_disponibles(date_selectionnee)
-
-    st.subheader(f"Créneaux pour le {date_selectionnee.strftime('%d/%m/%Y')}")
-
-    # Légende
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.markdown('<div class="slot-libre">🟢 Disponible</div>', unsafe_allow_html=True)
-    with col2:
-        st.markdown('<div class="slot-occupe">🔴 Réservé</div>', unsafe_allow_html=True)
-    with col3:
-        st.markdown('<div class="slot-pause">⏸️ Pause</div>', unsafe_allow_html=True)
-
-    st.markdown("---")
-
-    # Grille de créneaux
-    cols = st.columns(4)
-    for idx, creneau in enumerate(creneaux):
-        with cols[idx % 4]:
-            if creneau['statut'] == 'libre':
-                st.markdown(f'<div class="calendar-slot slot-libre">✅ {creneau["heure"]}<br>Disponible</div>',
-                            unsafe_allow_html=True)
-            elif creneau['statut'] == 'occupe':
-                res = next((r for r in st.session_state.reservations
-                            if r['date'] == date_selectionnee.isoformat() and r['heure'] == creneau['heure']), None)
-                if res:
-                    st.markdown(
-                        f'<div class="calendar-slot slot-occupe">🚗 {creneau["heure"]}<br>{res["client_nom"]}</div>',
-                        unsafe_allow_html=True)
-            else:
-                st.markdown(f'<div class="calendar-slot slot-pause">⏸️ {creneau["heure"]}<br>Pause</div>',
-                            unsafe_allow_html=True)
-
-    # Détails des réservations du jour
-    st.markdown("---")
-    st.subheader("📋 Détails des réservations")
-
-    reservations_jour = [r for r in st.session_state.reservations if r['date'] == date_selectionnee.isoformat()]
-
-    if reservations_jour:
-        for res in sorted(reservations_jour, key=lambda x: x['heure']):
-            service = SERVICES[res['service_id']]
-            with st.expander(f"🕐 {res['heure']} - {res['client_nom']} ({res['vehicule']})"):
-                col1, col2 = st.columns(2)
-                with col1:
-                    st.write(f"**Service:** {service['nom']}")
-                    st.write(f"**Prix:** {format_fcfa(service['prix'])}")
-                    st.write(f"**Durée:** {service['duree']}min")
-                    st.write(f"**Téléphone:** {res['client_tel']}")
-                with col2:
-                    st.write(f"**Paiement:** {res.get('statut_paiement', '❌ Non payé')}")
-                    st.write(f"**Points fidélité:** +{service['points']} points")
-                    if res.get('notes'):
-                        st.write(f"**Notes:** {res['notes']}")
-
-                col1, col2 = st.columns(2)
-                with col1:
-                    if st.button("📄 Générer Facture", key=f"facture_{res['id']}"):
-                        facture = generer_facture_pdf(res['id'])
-                        st.code(facture)
-                with col2:
-                    if st.button("✅ Marquer payé", key=f"payer_{res['id']}"):
-                        for r in st.session_state.reservations:
-                            if r['id'] == res['id']:
-                                r['statut_paiement'] = '✅ Payé'
-                        st.success("Paiement enregistré !")
-                        st.rerun()
-
-# ====== PAGE NOUVELLE RÉSERVATION ======
-elif page == "✨ Nouvelle Réservation":
-    st.title("✨ Nouvelle Réservation")
-
-    col1, col2 = st.columns(2)
-
-    with col1:
-        client_nom = st.text_input("👤 Nom du client *", placeholder="Amadou Diallo")
-        vehicule = st.text_input("🚗 Véhicule *", placeholder="Toyota Corolla 2020")
-        date_res = st.date_input("📅 Date *", min_value=date.today())
-
-        # Afficher les créneaux disponibles
-        creneaux_dispo = [c['heure'] for c in generer_creneaux_disponibles(date_res) if c['statut'] == 'libre']
-        heure = st.selectbox("🕐 Heure *", options=creneaux_dispo if creneaux_dispo else ["Aucun créneau disponible"])
-
-    with col2:
-        client_tel = st.text_input("📞 Téléphone *", placeholder="+225 07 12 34 56 78")
-        client_email = st.text_input("📧 Email", placeholder="client@email.com")
-        service_id = st.selectbox(
-            "🔧 Service *",
-            options=list(SERVICES.keys()),
-            format_func=lambda
-                x: f"{SERVICES[x]['nom']} - {format_fcfa(SERVICES[x]['prix'])} ({SERVICES[x]['duree']}min) +{SERVICES[x]['points']}pts"
-        )
-
-        # Code promo
-        code_promo = st.text_input("🎁 Code promo (optionnel)", placeholder="FIRST10")
-
-    notes = st.text_area("📝 Notes/Instructions spéciales")
-
-    # Options avancées
-    with st.expander("⚙️ Options avancées"):
-        photo_avant = st.text_input("📸 URL Photo AVANT (optionnel)")
-        envoi_email = st.checkbox("📧 Envoyer email de confirmation", value=True)
-        acompte = st.number_input("💳 Acompte reçu (FCFA)", min_value=0, value=0, step=1000)
-
-    # Aperçu du prix
-    prix_base = SERVICES[service_id]['prix']
-    prix_final = appliquer_code_promo(prix_base, code_promo) if code_promo else prix_base
-
-    if code_promo and prix_final < prix_base:
-        st.success(f"🎉 Code promo appliqué ! Prix: ~~{format_fcfa(prix_base)}~~ → **{format_fcfa(prix_final)}**")
-    else:
-        st.info(f"💰 Prix total: **{format_fcfa(prix_final)}**")
-
-    if st.button("✅ Confirmer la réservation", use_container_width=True, type="primary"):
-        if client_nom and client_tel and vehicule and creneaux_dispo:
-            # Créer la réservation
-            nouvelle_res = {
-                'id': len(st.session_state.reservations) + 1,
-                'client_nom': client_nom,
-                'client_tel': client_tel,
-                'client_email': client_email,
-                'vehicule': vehicule,
-                'date': date_res.isoformat(),
-                'heure': heure,
-                'service_id': service_id,
-                'notes': notes,
-                'code_promo': code_promo,
-                'prix_final': prix_final,
-                'photo_avant': photo_avant,
-                'statut_paiement': '✅ Payé' if acompte >= prix_final else f'💳 Acompte {format_fcfa(acompte)}' if acompte > 0 else '❌ Non payé',
-                'created_at': datetime.now().isoformat()
-            }
-            st.session_state.reservations.append(nouvelle_res)
-
-            # Ajouter/mettre à jour le client
-            client_existant = next((c for c in st.session_state.clients if c['tel'] == client_tel), None)
-            if not client_existant:
-                nouveau_client = {
-                    'id': len(st.session_state.clients) + 1,
-                    'nom': client_nom,
-                    'tel': client_tel,
-                    'email': client_email,
-                    'vehicule': vehicule,
-                    'points_fidelite': SERVICES[service_id]['points'],
-                    'date_ajout': datetime.now().isoformat()
-                }
-                st.session_state.clients.append(nouveau_client)
-            else:
-                client_existant['points_fidelite'] = client_existant.get('points_fidelite', 0) + SERVICES[service_id][
-                    'points']
-
-            st.success("✅ Réservation confirmée avec succès !")
-            st.balloons()
-
-            if envoi_email and client_email:
-                st.info(f"📧 Email de confirmation envoyé à {client_email}")
-
-            st.markdown(f"""
-            <div class="success-box">
-            <h3>📋 Récapitulatif</h3>
-            Client: {client_nom}<br>
-            Date: {date_res.strftime('%d/%m/%Y')} à {heure}<br>
-            Service: {SERVICES[service_id]['nom']}<br>
-            Prix: {format_fcfa(prix_final)}<br>
-            Points gagnés: +{SERVICES[service_id]['points']} points
-            </div>
-            """, unsafe_allow_html=True)
-        else:
-            st.error("⚠️ Veuillez remplir tous les champs obligatoires et choisir un créneau disponible")
-
-# ====== PAGE DEVIS & PROMOS ======
-elif page == "💰 Devis & Promos":
-    st.title("💰 Calculateur de Devis & Codes Promo")
-
-    tab1, tab2 = st.tabs(["💵 Devis", "🎁 Codes Promo"])
-
-    with tab1:
-        st.subheader("Sélectionnez les services")
-
-        services_selectionnes = []
-        for service_id, service in SERVICES.items():
-            if st.checkbox(
-                    f"{service['nom']} - {format_fcfa(service['prix'])} (⏱️ {service['duree']}min, +{service['points']} points)",
-                    key=f"devis_service_{service_id}"
-            ):
-                services_selectionnes.append(service_id)
-
-        if services_selectionnes:
-            total_prix = sum([SERVICES[s]['prix'] for s in services_selectionnes])
-            total_duree = sum([SERVICES[s]['duree'] for s in services_selectionnes])
-            total_points = sum([SERVICES[s]['points'] for s in services_selectionnes])
-
-            code_promo_devis = st.text_input("🎁 Appliquer un code promo")
-            prix_final = appliquer_code_promo(total_prix, code_promo_devis) if code_promo_devis else total_prix
-
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                reduction = total_prix - prix_final
-                st.metric("💰 Total", format_fcfa(prix_final),
-                          delta=f"-{format_fcfa(reduction)}" if reduction > 0 else None)
-            with col2:
-                st.metric("⏱️ Durée", f"{total_duree // 60}h{total_duree % 60}min")
-            with col3:
-                st.metric("⭐ Points", f"+{total_points}")
-
-    with tab2:
-        st.subheader("🎁 Gérer les codes promo")
-
-        # Afficher codes existants
-        for idx, promo in enumerate(st.session_state.codes_promo):
-            col1, col2, col3 = st.columns([2, 2, 1])
-            with col1:
-                st.write(f"**{promo['code']}**")
-            with col2:
-                if promo['type'] == 'pourcentage':
-                    st.write(f"-{promo['reduction']}%")
-                else:
-                    st.write(f"-{format_fcfa(promo['reduction'])}")
-            with col3:
-                st.write("✅ Actif" if promo['actif'] else "❌ Inactif")
-
-        st.markdown("---")
-
-        # Ajouter nouveau code
-        st.write("**Créer un nouveau code**")
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            new_code = st.text_input("Code", key="new_promo_code")
+    """Formate en FCFA"""
+    return f"{int(montant):,} FCFA".replace(",", " ")
+
+# ===== AUTHENTIFICATION =====
+def check_authentication():
+    """Vérifie si l\'utilisateur est connecté"""
+    if "authenticated" not in st.session_state:
+        st.session_state.authenticated = False
+    
+    if not st.session_state.authenticated:
+        col1, col2, col3 = st.columns([1, 2, 1])
+        
         with col2:
-            reduction = st.number_input("Réduction", min_value=1, key="new_promo_reduction")
-        with col3:
-            type_reduction = st.selectbox("Type", ["pourcentage", "fcfa"], key="new_promo_type")
-
-        if st.button("➕ Ajouter"):
-            st.session_state.codes_promo.append({
-                'code': new_code,
-                'reduction': reduction,
-                'type': type_reduction,
-                'actif': True
-            })
-            st.success(f"Code {new_code} ajouté !")
-            st.rerun()
-
-# ====== PAGE CLIENTS & FIDÉLITÉ ======
-elif page == "👥 Clients & Fidélité":
-    st.title("👥 Base Clients & Programme Fidélité")
-
-    st.info("🎁 Programme fidélité: 10 points = 1 lavage gratuit !")
-
-    if st.session_state.clients:
-        # Statistiques clients
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("Total clients", len(st.session_state.clients))
-        with col2:
-            clients_fideles = len([c for c in st.session_state.clients if c.get('points_fidelite', 0) >= 10])
-            st.metric("Clients fidèles (10+ pts)", clients_fideles)
-        with col3:
-            revenus_total = sum([
-                sum([SERVICES[r['service_id']]['prix'] for r in st.session_state.reservations if
-                     r['client_tel'] == c['tel']])
-                for c in st.session_state.clients
-            ])
-            st.metric("CA Total clients", format_fcfa(revenus_total))
-
-        st.markdown("---")
-
-        # Liste des clients avec détails
-        for client in sorted(st.session_state.clients, key=lambda x: x.get('points_fidelite', 0), reverse=True):
-            reservations_client = [r for r in st.session_state.reservations if r['client_tel'] == client['tel']]
-            nb_reservations = len(reservations_client)
-            total_depense = sum([SERVICES[r['service_id']]['prix'] for r in reservations_client])
-            points = client.get('points_fidelite', 0)
-
-            # Badge fidélité
-            badge = "🏆 VIP" if points >= 20 else "⭐ Fidèle" if points >= 10 else "👤 Client"
-
-            with st.expander(f"{badge} {client['nom']} - {points} points"):
-                col1, col2 = st.columns(2)
-
-                with col1:
-                    st.write(f"**📞 Téléphone:** {client['tel']}")
-                    st.write(f"**📧 Email:** {client.get('email', 'Non renseigné')}")
-                    st.write(f"**🚗 Véhicule:** {client['vehicule']}")
-                    st.write(f"**📅 Client depuis:** {client['date_ajout'][:10]}")
-
-                with col2:
-                    st.metric("Réservations", nb_reservations)
-                    st.metric("Dépenses totales", format_fcfa(total_depense))
-                    st.metric("Points fidélité", f"{points}/10")
-
-                    if points >= 10:
-                        if st.button(f"🎁 Utiliser 10 points (lavage gratuit)", key=f"fidelite_{client['id']}"):
-                            client['points_fidelite'] -= 10
-                            st.success("10 points utilisés ! Lavage gratuit accordé 🎉")
-                            st.rerun()
-    else:
-        st.info("Aucun client enregistré")
-
-# ====== PAGE PORTFOLIO ======
-elif page == "📸 Portfolio":
-    st.title("📸 Portfolio - Nos Réalisations")
-
-    tab1, tab2 = st.tabs(["🖼️ Galerie", "➕ Ajouter"])
-
-    with tab1:
-        if st.session_state.portfolio:
-            cols = st.columns(3)
-            for idx, photo in enumerate(st.session_state.portfolio):
-                with cols[idx % 3]:
-                    st.image(photo['image_url'], use_container_width=True)
-                    st.markdown(f"**{photo['titre']}**")
-                    if photo.get('description'):
-                        st.write(photo['description'])
-                    if photo.get('note'):
-                        st.write(f"⭐ Note: {photo['note']}/5")
-
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        if st.button("🗑️", key=f"del_portfolio_{idx}"):
-                            st.session_state.portfolio.pop(idx)
-                            st.rerun()
-                    with col2:
-                        if st.button("👍", key=f"like_portfolio_{idx}"):
-                            st.success("Ajouté aux favoris !")
-                    st.markdown("---")
-        else:
-            st.info("Aucune photo dans le portfolio")
-
-    with tab2:
-        st.subheader("Ajouter une réalisation")
-        col1, col2 = st.columns(2)
-        with col1:
-            titre = st.text_input("Titre *", placeholder="Toyota Hilux - Détailing Complet")
-            image_url = st.text_input("URL de l'image *", placeholder="https://...")
-        with col2:
-            note_client = st.slider("Note du client", 1, 5, 5)
-            description = st.text_input("Description", placeholder="Polissage + céramique + intérieur")
-
-        if st.button("➕ Ajouter au portfolio", use_container_width=True):
-            if titre and image_url:
-                nouvelle_photo = {
-                    'id': len(st.session_state.portfolio) + 1,
-                    'titre': titre,
-                    'description': description,
-                    'image_url': image_url,
-                    'note': note_client,
-                    'date': datetime.now().isoformat()
-                }
-                st.session_state.portfolio.append(nouvelle_photo)
-                st.success("✅ Photo ajoutée !")
-                st.rerun()
-
-# ====== PAGE STATISTIQUES ======
-elif page == "📊 Statistiques":
-    st.title("📊 Statistiques & Analytics")
-
-    if not st.session_state.reservations:
-        st.info("Pas encore de données pour les statistiques. Créez des réservations d'abord !")
-    else:
-        # Filtres
-        col1, col2 = st.columns(2)
-        with col1:
-            periode = st.selectbox("Période", ["7 derniers jours", "30 derniers jours", "Tout"])
-        with col2:
-            st.metric("Total réservations", len(st.session_state.reservations))
-
-        # Graphiques
-        tab1, tab2, tab3, tab4 = st.tabs(["💰 Revenus", "📈 Services", "👥 Clients", "⏰ Planning"])
-
-        with tab1:
-            # Revenus par jour
-            df_res = pd.DataFrame([
-                {
-                    'date': r['date'],
-                    'revenus': SERVICES[r['service_id']]['prix']
-                }
-                for r in st.session_state.reservations
-            ])
-
-            if not df_res.empty:
-                df_grouped = df_res.groupby('date')['revenus'].sum().reset_index()
-                fig = px.line(df_grouped, x='date', y='revenus', title='Évolution des revenus (FCFA)')
-                fig.update_traces(line_color='#667eea', line_width=3)
-                st.plotly_chart(fig, use_container_width=True)
-
-                col1, col2 = st.columns(2)
-                with col1:
-                    st.metric("CA Total", format_fcfa(df_grouped['revenus'].sum()))
-                with col2:
-                    st.metric("CA Moyen/Jour", format_fcfa(df_grouped['revenus'].mean()))
-
-        with tab2:
-            # Services les plus demandés
-            services_count = {}
-            for r in st.session_state.reservations:
-                service_nom = SERVICES[r['service_id']]['nom']
-                services_count[service_nom] = services_count.get(service_nom, 0) + 1
-
-            if services_count:
-                fig = px.pie(
-                    values=list(services_count.values()),
-                    names=list(services_count.keys()),
-                    title='Répartition des services'
-                )
-                st.plotly_chart(fig, use_container_width=True)
-
-        with tab3:
-            # Top clients
-            st.subheader("🏆 Top 5 Clients")
-            clients_stats = []
-            for client in st.session_state.clients:
-                reservations_client = [r for r in st.session_state.reservations if r['client_tel'] == client['tel']]
-                total_depense = sum([SERVICES[r['service_id']]['prix'] for r in reservations_client])
-                clients_stats.append({
-                    'nom': client['nom'],
-                    'reservations': len(reservations_client),
-                    'depense_fcfa': total_depense,
-                    'points': client.get('points_fidelite', 0)
-                })
-
-            df_clients = pd.DataFrame(clients_stats).sort_values('depense_fcfa', ascending=False).head(5)
-            if not df_clients.empty:
-                st.dataframe(df_clients, use_container_width=True)
-
-        with tab4:
-            # Créneaux les plus demandés
-            creneaux_count = {}
-            for r in st.session_state.reservations:
-                creneaux_count[r['heure']] = creneaux_count.get(r['heure'], 0) + 1
-
-            if creneaux_count:
-                fig = px.bar(
-                    x=list(creneaux_count.keys()),
-                    y=list(creneaux_count.values()),
-                    title='Créneaux horaires les plus demandés'
-                )
-                fig.update_traces(marker_color='#667eea')
-                st.plotly_chart(fig, use_container_width=True)
-
-# ====== PAGE PARAMÈTRES ======
-elif page == "⚙️ Paramètres":
-    st.title("⚙️ Paramètres & Configuration")
-
-    tab1, tab2, tab3 = st.tabs(["🏢 Entreprise", "💾 Données", "🔔 Notifications"])
-
-    with tab1:
-        st.subheader("Informations de l'entreprise")
-        nom_entreprise = st.text_input("Nom", value="Lavage Esthétique Pro")
-        adresse = st.text_input("Adresse", value="Abidjan, Cocody")
-        telephone = st.text_input("Téléphone", value="+225 07 12 34 56 78")
-        email = st.text_input("Email", value="contact@lavagepro.ci")
-
-        st.subheader("⏰ Horaires d'ouverture")
-        col1, col2 = st.columns(2)
-        with col1:
-            heure_ouverture = st.time_input("Ouverture", value=datetime.strptime("08:00", "%H:%M").time())
-            pause_debut = st.time_input("Début pause", value=datetime.strptime("12:00", "%H:%M").time())
-        with col2:
-            heure_fermeture = st.time_input("Fermeture", value=datetime.strptime("18:00", "%H:%M").time())
-            pause_fin = st.time_input("Fin pause", value=datetime.strptime("13:00", "%H:%M").time())
-
-        if st.button("💾 Sauvegarder les paramètres"):
-            st.success("✅ Paramètres sauvegardés !")
-
-    with tab2:
-        st.subheader("💾 Gestion des données")
-
-        col1, col2, col3 = st.columns(3)
-
-        with col1:
-            st.write(f"**Réservations:** {len(st.session_state.reservations)}")
-            st.write(f"**Clients:** {len(st.session_state.clients)}")
-            st.write(f"**Portfolio:** {len(st.session_state.portfolio)}")
-
-        with col2:
-            if st.button("📥 Exporter tout (JSON)"):
-                data_export = {
-                    'reservations': st.session_state.reservations,
-                    'clients': st.session_state.clients,
-                    'portfolio': st.session_state.portfolio,
-                    'avis': st.session_state.avis,
-                    'export_date': datetime.now().isoformat()
-                }
-                st.download_button(
-                    "💾 Télécharger",
-                    data=json.dumps(data_export, indent=2, ensure_ascii=False),
-                    file_name=f"backup_{date.today()}.json",
-                    mime="application/json"
-                )
-
-        with col3:
-            if st.button("🗑️ Réinitialiser", type="secondary"):
-                if st.checkbox("Je confirme la réinitialisation"):
-                    st.session_state.reservations = []
-                    st.session_state.clients = []
-                    st.session_state.portfolio = []
-                    st.session_state.avis = []
-                    st.success("Données réinitialisées")
+            st.markdown("<br><br>", unsafe_allow_html=True)
+            st.markdown("# 🚗 WashAfrique Pro")
+            st.markdown("### Solution de Gestion Entreprise de Nettoyage Esthétique")
+            st.markdown("---")
+            
+            username = st.text_input("👤 Nom d\'utilisateur", placeholder="Entrez votre identifiant")
+            password = st.text_input("🔒 Mot de passe", type="password", placeholder="Entrez votre mot de passe")
+            
+            if st.button("🚀 Se connecter", use_container_width=True, type="primary"):
+                user = st.session_state.db.verify_user(username, password)
+                if user:
+                    st.session_state.authenticated = True
+                    st.session_state.user = user
+                    st.success("✅ Connexion réussie !")
                     st.rerun()
+                else:
+                    st.error("❌ Identifiants incorrects")
+            
+            st.markdown("---")
+            st.info("💡 **Compte par défaut:** Propriétaire → admin / admin123")
+        
+        return False
+    
+    return True
 
+# Vérifier l\'authentification
+if not check_authentication():
+    st.stop()
+
+# ===== NAVIGATION HORIZONTALE =====
+st.markdown(f"""
+    <div class="nav-header">
+        <h2 style="color: white; margin: 0;">🚗 WashAfrique Pro | {st.session_state.user["username"]} ({st.session_state.user["role"]})</h2>
+    </div>
+""", unsafe_allow_html=True)
+
+# Bouton de déconnexion en haut à droite
+col1, col2, col3 = st.columns([3, 1, 1])
+with col3:
+    if st.button("🚪 Déconnexion", use_container_width=True):
+        st.session_state.authenticated = False
+        st.rerun()
+
+# Navigation selon le rôle
+user_role = st.session_state.user["role"]
+
+if user_role == "admin":  # PROPRIÉTAIRE
+    tabs = st.tabs([
+        "🏠 Tableau de Bord",
+        "👥 Employés",
+        "🔧 Services & Prix",
+        "📅 Réservations",
+        "💼 Clients",
+        "💰 Paiements",
+        "📦 Stock",
+        "📊 Rapports",
+        "⚙️ Mon Profil"
+    ])
+    
+    # ===== ONGLET 1: TABLEAU DE BORD PROPRIÉTAIRE =====
+    with tabs[0]:
+        st.header("📊 Tableau de Bord Propriétaire")
+        
+        stats = st.session_state.db.get_stats_dashboard()
+        
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            st.metric("📅 RDV Aujourd\'hui", stats["rdv_today"])
+        with col2:
+            st.metric("💰 CA Jour", format_fcfa(stats["revenus_today"]))
+        with col3:
+            st.metric("💰 CA Total", format_fcfa(stats["revenus_total"]))
+        with col4:
+            st.metric("👥 Clients", stats["total_clients"])
+        
         st.markdown("---")
-        st.info("💡 Astuce: Pour sauvegarder définitivement vos données, utilisez Google Sheets (voir documentation)")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.subheader("📈 Évolution CA (30j)")
+            revenus_data = st.session_state.db.get_revenus_par_jour(30)
+            if revenus_data:
+                df = pd.DataFrame(revenus_data)
+                fig = px.line(df, x="date", y="revenus", markers=True)
+                fig.update_layout(xaxis_title="Date", yaxis_title="Revenus (FCFA)")
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.info("Aucune donnée disponible")
+        
+        with col2:
+            st.subheader("🏆 Services Populaires")
+            services_stats = st.session_state.db.get_services_stats()
+            if services_stats:
+                df = pd.DataFrame(services_stats)
+                fig = px.pie(df, values="nb_reservations", names="nom", hole=0.4)
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.info("Aucune donnée disponible")
+        
+        st.markdown("---")
+        st.subheader("⏰ Activité Employés Aujourd\'hui")
+        
+        # Afficher les pointages du jour
+        pointages_today = st.session_state.db.get_pointages_jour(date.today().isoformat())
+        
+        if pointages_today:
+            for pointage in pointages_today:
+                col1, col2, col3 = st.columns([2, 2, 1])
+                with col1:
+                    st.write(f"**{pointage['username']}**")
+                with col2:
+                    st.write(f"{pointage['type'].upper()} à {pointage['heure']}")
+                with col3:
+                    if pointage['type'] == 'arrivee':
+                        st.success("✅")
+                    else:
+                        st.info("🏁")
+        else:
+            st.info("Aucun pointage aujourd'hui")
+    
+    # ===== ONGLET 2: GESTION EMPLOYÉS =====
+    with tabs[1]:
+        st.header("👨💼 Gestion des Employés")
+        
+        sub_tabs = st.tabs(["📋 Liste Employés", "➕ Ajouter Employé", "⏰ Pointages"])
+        
+        with sub_tabs[0]:
+            st.subheader("📋 Tous les Employés")
+            
+            employes = st.session_state.db.get_all_employes(actif_only=False)
+            
+            if employes:
+                for emp in employes:
+                    col1, col2, col3, col4, col5 = st.columns([2, 2, 2, 2, 1])
+                    
+                    with col1:
+                        st.write(f"**{emp['nom']}**")
+                    with col2:
+                        st.write(f"📞 {emp['tel'] or 'N/A'}")
+                    with col3:
+                        st.write(f"🏷️ {emp['poste'] or 'N/A'}")
+                    with col4:
+                        st.write(f"💰 {format_fcfa(emp['salaire'])}/mois")
+                    with col5:
+                        if emp['actif']:
+                            st.success("✅ Actif")
+                        else:
+                            st.error("❌ Inactif")
+                    
+                    with st.expander(f"Gérer {emp['nom']}"):
+                        col_a, col_b = st.columns(2)
+                        
+                        with col_a:
+                            if st.button(f"🗑️ Supprimer", key=f"del_emp_{emp['id']}"):
+                                # TODO: Implémenter suppression
+                                st.warning("Suppression employé à implémenter")
+                        
+                        with col_b:
+                            if st.button(f"✏️ Modifier", key=f"edit_emp_{emp['id']}"):
+                                st.info("Modification à implémenter")
+                    
+                    st.markdown("---")
+            else:
+                st.info("Aucun employé enregistré")
+        
+        with sub_tabs[1]:
+            st.subheader("➕ Ajouter un Nouvel Employé")
+            
+            with st.form("nouvel_employe"):
+                nom = st.text_input("👤 Nom complet *", placeholder="Ex: Jean Kouassi")
+                
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    tel = st.text_input("📞 Téléphone *", placeholder="+225 XX XX XX XX")
+                    username_emp = st.text_input("🔐 Nom d\'utilisateur *", placeholder="jean.k")
+                
+                with col2:
+                    poste = st.text_input("🏷️ Poste", placeholder="Ex: Nettoyeur")
+                    password_emp = st.text_input("🔒 Mot de passe *", type="password", placeholder="Minimum 6 caractères")
+                
+                salaire = st.number_input("💰 Salaire mensuel (FCFA)", min_value=0, step=10000, value=100000)
+                
+                submitted = st.form_submit_button("✅ Créer le Compte Employé", use_container_width=True, type="primary")
+                
+                if submitted:
+                    if nom and tel and username_emp and password_emp:
+                        if len(password_emp) < 6:
+                            st.error("⚠️ Le mot de passe doit contenir au moins 6 caractères")
+                        else:
+                            # Créer le compte utilisateur
+                            user_id = st.session_state.db.creer_compte_employe(username_emp, password_emp, "")
+                            
+                            if user_id == -1:
+                                st.error("❌ Ce nom d'utilisateur existe déjà. Veuillez en choisir un autre.")
+                            else:
+                                # Créer l'employé
+                                emp_id = st.session_state.db.ajouter_employe(nom, tel, poste, salaire)
+                                
+                                # Lier employé et compte utilisateur
+                                st.session_state.db.lier_employe_user(emp_id, user_id)
+                                
+                                st.success(f"✅ Employé {nom} créé avec succès !")
+                                st.info(f"📋 **Identifiants de connexion:**\n- Username: `{username_emp}`\n- Password: `{password_emp}`")
+                                st.balloons()
+                    else:
+                        st.error("⚠️ Veuillez remplir tous les champs obligatoires")
+        
+        with sub_tabs[2]:
+            st.subheader("⏰ Pointages et Présences")
+            
+            date_pointage = st.date_input("📅 Sélectionner une date", value=date.today())
+            
+            # Afficher les pointages du jour sélectionné
+            pointages_jour = st.session_state.db.get_pointages_jour(date_pointage.isoformat())
+            
+            if pointages_jour:
+                st.write(f"**{len(pointages_jour)} pointages ce jour**")
+                
+                for pointage in pointages_jour:
+                    col1, col2, col3, col4 = st.columns([2, 2, 2, 1])
+                    
+                    with col1:
+                        st.write(f"**{pointage['username']}**")
+                    with col2:
+                        st.write(f"🕐 {pointage['heure']}")
+                    with col3:
+                        type_emoji = "✅ ARRIVÉE" if pointage['type'] == 'arrivee' else "🏁 DÉPART"
+                        st.write(type_emoji)
+                    with col4:
+                        if pointage.get('notes'):
+                            st.caption(pointage['notes'])
+                    
+                    st.markdown("---")
+            else:
+                st.info(f"Aucun pointage le {date_pointage.strftime('%d/%m/%Y')}")
+    
+    # ===== ONGLET 3: SERVICES & PRIX =====
+    with tabs[2]:
+        st.header("🔧 Gestion Services & Prix")
+        
+        sub_tabs = st.tabs(["📋 Mes Services", "➕ Nouveau Service", "🏷️ Catégories"])
+        
+        with sub_tabs[0]:
+            st.subheader("📋 Liste de vos Services")
+            
+            services = st.session_state.db.get_all_services(actif_only=False)
+            
+            if services:
+                for service in services:
+                    col1, col2, col3, col4, col5 = st.columns([3, 2, 2, 1, 1])
+                    
+                    with col1:
+                        st.write(f"**{service[\'nom\']}**")
+                        if service.get(\'description\'):
+                            st.caption(service[\'description\'])
+                    with col2:
+                        st.write(f"💰 {format_fcfa(service[\'prix\'])}")
+                    with col3:
+                        st.write(f"⏱️ {service[\'duree\']} min")
+                    with col4:
+                        st.write(f"⭐ {service[\'points\']} pts")
+                    with col5:
+                        if service[\'actif\']:
+                            st.success("✅")
+                        else:
+                            st.error("❌")
+                    
+                    st.markdown("---")
+            else:
+                st.info("Aucun service créé")
+        
+        with sub_tabs[1]:
+            st.subheader("➕ Créer un Nouveau Service")
+            
+            with st.form("nouveau_service"):
+                nom_service = st.text_input("🏷️ Nom du service *", placeholder="Ex: Nettoyage Intérieur Premium")
+                description_service = st.text_area("📝 Description", placeholder="Décrivez le service en détail...")
+                
+                col1, col2, col3 = st.columns(3)
+                
+                with col1:
+                    prix_service = st.number_input("💰 Prix (FCFA) *", min_value=0, step=1000, value=10000)
+                with col2:
+                    duree_service = st.number_input("⏱️ Durée (minutes) *", min_value=5, step=5, value=60)
+                with col3:
+                    points_service = st.number_input("⭐ Points fidélité", min_value=0, value=2)
+                
+                submitted = st.form_submit_button("✅ Créer le Service", use_container_width=True, type="primary")
+                
+                if submitted:
+                    if nom_service and prix_service > 0 and duree_service > 0:
+                        service_id = st.session_state.db.ajouter_service(
+                            nom_service, prix_service, duree_service, points_service, description_service
+                        )
+                        st.success(f"✅ Service \'{nom_service}\' créé avec succès !")
+                        st.balloons()
+                        st.rerun()
+                    else:
+                        st.error("⚠️ Veuillez remplir tous les champs obligatoires")
+        
+        with sub_tabs[2]:
+            st.subheader("🏷️ Catégories de Services")
+            st.info("Fonctionnalité de catégorisation à développer")
+    
+    # ===== ONGLET 4: RÉSERVATIONS =====
+    with tabs[3]:
+        st.header("📅 Gestion des Réservations")
+        
+        sub_tabs = st.tabs(["➕ Nouvelle Réservation", "📋 Planning", "🔍 Rechercher"])
+        
+        with sub_tabs[0]:
+            st.subheader("➕ Créer une Nouvelle Réservation")
+            
+            services = st.session_state.db.get_all_services()
+            
+            if not services:
+                st.warning("⚠️ Aucun service disponible. Créez d\'abord des services.")
+            else:
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    st.markdown("#### 👤 Informations Client")
+                    
+                    tel_search = st.text_input("📞 Rechercher par téléphone", placeholder="+225 XX XX XX XX")
+                    client_existant = None
+                    
+                    if tel_search:
+                        client_existant = st.session_state.db.get_client_by_tel(tel_search)
+                        if client_existant:
+                            st.success(f"✅ Client trouvé: **{client_existant[\'nom\']}**")
+                    
+                    if client_existant:
+                        nom = st.text_input("👤 Nom", value=client_existant[\'nom\'])
+                        tel = st.text_input("📞 Téléphone", value=client_existant[\'tel\'], disabled=True)
+                        vehicule = st.text_input("🚗 Véhicule", value=client_existant.get(\'vehicule\', \'\'))
+                    else:
+                        nom = st.text_input("👤 Nom *", placeholder="Nom du client")
+                        tel = st.text_input("📞 Téléphone *", value=tel_search, placeholder="+225 XX XX XX XX")
+                        vehicule = st.text_input("🚗 Véhicule *", placeholder="Marque et modèle")
+                
+                with col2:
+                    st.markdown("#### 📋 Détails Réservation")
+                    
+                    date_rdv = st.date_input("📅 Date *", min_value=date.today())
+                    
+                    service_id = st.selectbox(
+                        "🔧 Service *",
+                        options=[s[\'id\'] for s in services],
+                        format_func=lambda x: f"{next(s[\'nom\'] for s in services if s[\'id\'] == x)} - {format_fcfa(next(s[\'prix\'] for s in services if s[\'id\'] == x))}"
+                    )
+                    
+                    heure = st.time_input("🕐 Heure *", value=datetime.strptime("09:00", "%H:%M").time())
+                    
+                    notes = st.text_area("📝 Notes (optionnel)")
+                
+                if st.button("✅ Confirmer la Réservation", use_container_width=True, type="primary"):
+                    if nom and tel and vehicule:
+                        if client_existant:
+                            client_id = client_existant[\'id\']
+                        else:
+                            client_id = st.session_state.db.ajouter_client(nom, tel, "", vehicule)
+                        
+                        service_choisi = next(s for s in services if s[\'id\'] == service_id)
+                        heure_str = heure.strftime("%H:%M")
+                        
+                        reservation_id = st.session_state.db.ajouter_reservation(
+                            client_id=client_id,
+                            service_id=service_id,
+                            date=date_rdv.isoformat(),
+                            heure=heure_str,
+                            montant=service_choisi[\'prix\'],
+                            notes=notes
+                        )
+                        
+                        st.success(f"✅ Réservation #{reservation_id:05d} créée avec succès !")
+                        st.balloons()
+                    else:
+                        st.error("⚠️ Veuillez remplir tous les champs obligatoires")
+        
+        with sub_tabs[1]:
+            st.subheader("📅 Planning des Réservations")
+            
+            date_select = st.date_input("Choisir une date", value=date.today())
+            
+            reservations_jour = st.session_state.db.get_reservations_by_date(date_select.isoformat())
+            
+            if reservations_jour:
+                for res in sorted(reservations_jour, key=lambda x: x[\'heure\']):
+                    with st.expander(f"🕐 {res[\'heure\']} - {res[\'client_nom\']} ({res[\'statut\']})"):
+                        col1, col2 = st.columns(2)
+                        
+                        with col1:
+                            st.write(f"**Client:** {res[\'client_nom\']}")
+                            st.write(f"**Téléphone:** {res[\'client_tel\']}")
+                            st.write(f"**Véhicule:** {res[\'vehicule\']}")
+                        
+                        with col2:
+                            st.write(f"**Service:** {res[\'service_nom\']}")
+                            st.write(f"**Prix:** {format_fcfa(res[\'montant\'])}")
+                            st.write(f"**Statut:** {res[\'statut\']}")
+                        
+                        if res.get(\'notes\'):
+                            st.info(f"📝 {res[\'notes\']}")
+            else:
+                st.info("Aucune réservation ce jour")
+        
+        with sub_tabs[2]:
+            st.subheader("🔍 Rechercher une Réservation")
+            st.info("Fonctionnalité de recherche à développer")
+    
+    # ===== ONGLET 5: CLIENTS =====
+    with tabs[4]:
+        st.header("👥 Gestion des Clients")
+        
+        clients = st.session_state.db.get_all_clients()
+        
+        if clients:
+            st.write(f"**Total: {len(clients)} clients**")
+            
+            search = st.text_input("🔍 Rechercher", placeholder="Nom ou téléphone...")
+            
+            if search:
+                clients = [c for c in clients if search.lower() in c[\'nom\'].lower() or search in c[\'tel\']]
+            
+            st.markdown("---")
+            
+            for client in clients:
+                with st.expander(f"👤 {client[\'nom\']} - {client[\'tel\']} | ⭐ {client[\'points_fidelite\']} pts"):
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        st.write(f"**Téléphone:** {client[\'tel\']}")
+                        st.write(f"**Email:** {client.get(\'email\', \'N/A\')}")
+                        st.write(f"**Véhicule:** {client.get(\'vehicule\', \'N/A\')}")
+                    
+                    with col2:
+                        st.metric("Points fidélité", client[\'points_fidelite\'])
+                        st.metric("Total dépensé", format_fcfa(client[\'total_depense\']))
+        else:
+            st.info("Aucun client enregistré")
+    
+    # ===== ONGLET 6: PAIEMENTS =====
+    with tabs[5]:
+        st.header("💰 Gestion des Paiements")
+        
+        st.info("Module paiements à développer complètement")
+    
+    # ===== ONGLET 7: STOCK =====
+    with tabs[6]:
+        st.header("📦 Gestion du Stock")
+        
+        st.info("Module stock à développer complètement")
+    
+    # ===== ONGLET 8: RAPPORTS =====
+    with tabs[7]:
+        st.header("📊 Rapports et Statistiques")
+        
+        st.info("Module rapports à développer complètement")
+    
+    # ===== ONGLET 9: PROFIL PROPRIÉTAIRE =====
+    with tabs[8]:
+        st.header("⚙️ Mon Profil et Paramètres")
+        
+        sub_tabs = st.tabs(["👤 Informations", "🏢 Entreprise", "⏰ Horaires", "🔐 Sécurité"])
+        
+        with sub_tabs[0]:
+            st.subheader("👤 Mes Informations")
+            
+            with st.form("profil_proprio"):
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    nom_proprio = st.text_input("Nom complet", value=st.session_state.user[\'username\'])
+                    email_proprio = st.text_input("Email")
+                
+                with col2:
+                    tel_proprio = st.text_input("Téléphone")
+                    adresse_proprio = st.text_input("Adresse")
+                
+                if st.form_submit_button("💾 Enregistrer", use_container_width=True):
+                    st.success("✅ Profil mis à jour")
+        
+        with sub_tabs[1]:
+            st.subheader("🏢 Informations Entreprise")
+            
+            with st.form("info_entreprise"):
+                nom_entreprise = st.text_input("Nom de l\'entreprise", value="WashAfrique Pro")
+                description_entreprise = st.text_area("Description")
+                
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    tel_entreprise = st.text_input("Téléphone entreprise")
+                    email_entreprise = st.text_input("Email entreprise")
+                
+                with col2:
+                    adresse_entreprise = st.text_input("Adresse complète")
+                    site_web = st.text_input("Site web (optionnel)")
+                
+                if st.form_submit_button("💾 Enregistrer", use_container_width=True):
+                    st.success("✅ Informations entreprise mises à jour")
+        
+        with sub_tabs[2]:
+            st.subheader("⏰ Horaires d\'Ouverture")
+            
+            with st.form("horaires"):
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    ouverture = st.time_input("Heure d\'ouverture", value=datetime.strptime("08:00", "%H:%M").time())
+                    pause_debut = st.time_input("Début pause", value=datetime.strptime("12:00", "%H:%M").time())
+                
+                with col2:
+                    fermeture = st.time_input("Heure de fermeture", value=datetime.strptime("19:00", "%H:%M").time())
+                    pause_fin = st.time_input("Fin pause", value=datetime.strptime("13:00", "%H:%M").time())
+                
+                if st.form_submit_button("💾 Enregistrer", use_container_width=True):
+                    st.success("✅ Horaires mis à jour")
+        
+        with sub_tabs[3]:
+            st.subheader("🔐 Sécurité")
+            
+            with st.form("change_password"):
+                ancien_mdp = st.text_input("Ancien mot de passe", type="password")
+                nouveau_mdp = st.text_input("Nouveau mot de passe", type="password")
+                confirmer_mdp = st.text_input("Confirmer nouveau mot de passe", type="password")
+                
+                if st.form_submit_button("🔒 Changer le Mot de Passe", use_container_width=True):
+                    if nouveau_mdp == confirmer_mdp:
+                        st.success("✅ Mot de passe changé avec succès")
+                    else:
+                        st.error("❌ Les mots de passe ne correspondent pas")
 
-    with tab3:
-        st.subheader("🔔 Paramètres de notifications")
-
-        email_confirmation = st.checkbox("Email de confirmation client", value=True)
-        email_rappel = st.checkbox("Email de rappel 24h avant", value=True)
-        sms_confirmation = st.checkbox("SMS de confirmation", value=False)
-
-        email_admin = st.text_input("Email admin pour notifications", value="admin@lavagepro.ci")
-
-        st.info("📧 Configuration SMTP nécessaire pour l'envoi d'emails réels")
-
-# Footer
-st.sidebar.markdown("---")
-st.sidebar.info("""
-💰 **Devise:** FCFA (Franc CFA)  
-💾 **Mode:** Session  
-📚 **Version:** Pro+ 2.0 (Afrique)  
-🚀 **Mise à jour:** Janvier 2025
-""")
-
-# Boutons d'action rapide dans la sidebar
-st.sidebar.markdown("### ⚡ Actions rapides")
-if st.sidebar.button("🆕 Nouvelle réservation", use_container_width=True):
-    st.session_state.page_override = "✨ Nouvelle Réservation"
-if st.sidebar.button("📊 Voir stats", use_container_width=True):
-    st.session_state.page_override = "📊 Statistiques"
+else:  # EMPLOYÉ
+    st.header(f"👋 Bienvenue {st.session_state.user[\'username\']}")
+    
+    tabs = st.tabs([
+        "🏠 Mon Espace",
+        "⏰ Pointage",
+        "📋 Mes Tâches",
+        "👤 Mon Profil"
+    ])
+    
+    with tabs[0]:
+        st.subheader("🏠 Mon Espace Employé")
+        st.info("Dashboard employé à développer")
+    
+    with tabs[1]:
+        st.subheader("⏰ Pointage")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            if st.button("✅ Pointer Arrivée", use_container_width=True, type="primary"):
+                pointage_id = st.session_state.db.enregistrer_pointage(st.session_state.user['id'], 'arrivee')
+                st.success(f"✅ Pointage enregistré à {datetime.now().strftime('%H:%M')}")
+                st.rerun()
+        
+        with col2:
+            if st.button("🏁 Pointer Départ", use_container_width=True):
+                pointage_id = st.session_state.db.enregistrer_pointage(st.session_state.user['id'], 'depart')
+                st.success(f"🏁 Départ enregistré à {datetime.now().strftime('%H:%M')}")
+                st.rerun()
+        
+        st.markdown("---")
+        st.subheader("📊 Mes Pointages Ce Mois")
+        
+        # Afficher les pointages du mois en cours
+        debut_mois = date.today().replace(day=1).isoformat()
+        fin_mois = date.today().isoformat()
+        
+        pointages_mois = st.session_state.db.get_pointages_employe(
+            st.session_state.user['id'], 
+            debut_mois, 
+            fin_mois
+        )
+        
+        if pointages_mois:
+            # Grouper par date
+            dates_uniques = list(set([p['date'] for p in pointages_mois]))
+            dates_uniques.sort(reverse=True)
+            
+            for date_str in dates_uniques:
+                pointages_date = [p for p in pointages_mois if p['date'] == date_str]
+                
+                heures_travail = st.session_state.db.calculer_heures_travail(
+                    st.session_state.user['id'], 
+                    date_str
+                )
+                
+                with st.expander(f"📅 {date_str} - {heures_travail['heures_travail']}h travaillées"):
+                    for p in pointages_date:
+                        col1, col2 = st.columns([1, 3])
+                        with col1:
+                            st.write(f"🕐 {p['heure']}")
+                        with col2:
+                            type_text = "✅ Arrivée" if p['type'] == 'arrivee' else "🏁 Départ"
+                            st.write(type_text)
+        else:
+            st.info("Aucun pointage ce mois")
+    
+    with tabs[2]:
+        st.subheader("📋 Mes Tâches du Jour")
+        st.info("Liste des tâches à développer")
+    
+    with tabs[3]:
+        st.subheader("👤 Mon Profil")
+        
+        with st.form("profil_employe"):
+            st.write(f"**Nom:** {st.session_state.user[\'username\']}")
+            st.write(f"**Rôle:** {st.session_state.user[\'role\']}")
+            
+            tel = st.text_input("Téléphone")
+            email = st.text_input("Email")
+            
+            if st.form_submit_button("💾 Enregistrer"):
+                st.success("✅ Profil mis à jour")

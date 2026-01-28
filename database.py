@@ -76,10 +76,8 @@ class Database:
                 tel TEXT,
                 poste TEXT,
                 salaire REAL DEFAULT 0,
-                user_id INTEGER,
                 actif INTEGER DEFAULT 1,
-                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (user_id) REFERENCES users (id)
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
         ''')
         
@@ -211,20 +209,6 @@ class Database:
                 envoyee INTEGER DEFAULT 0,
                 date_envoi TEXT,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-        
-        # Table pointages (nouveau)
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS pointages (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER NOT NULL,
-                type TEXT NOT NULL,
-                date TEXT NOT NULL,
-                heure TEXT NOT NULL,
-                timestamp TEXT DEFAULT CURRENT_TIMESTAMP,
-                notes TEXT,
-                FOREIGN KEY (user_id) REFERENCES users (id)
             )
         ''')
         
@@ -736,160 +720,3 @@ class Database:
         
         conn.close()
         return data
-    
-    # ===== GESTION COMPTES EMPLOYÉS =====
-    def creer_compte_employe(self, username: str, password: str, email: str = "") -> int:
-        """Crée un compte utilisateur pour un employé"""
-        conn = self.get_connection()
-        cursor = conn.cursor()
-        password_hash = hashlib.sha256(password.encode()).hexdigest()
-        try:
-            cursor.execute(
-                "INSERT INTO users (username, password_hash, email, role) VALUES (?, ?, ?, ?)",
-                (username, password_hash, email, "employe")
-            )
-            user_id = cursor.lastrowid
-            conn.commit()
-            conn.close()
-            return user_id
-        except sqlite3.IntegrityError:
-            conn.close()
-            return -1  # Username déjà existant
-    
-    def lier_employe_user(self, employe_id: int, user_id: int):
-        """Lie un employé à son compte utilisateur"""
-        conn = self.get_connection()
-        cursor = conn.cursor()
-        cursor.execute(
-            "UPDATE employes SET user_id = ? WHERE id = ?",
-            (user_id, employe_id)
-        )
-        conn.commit()
-        conn.close()
-    
-    def supprimer_employe(self, employe_id: int):
-        """Désactive un employé (soft delete)"""
-        conn = self.get_connection()
-        cursor = conn.cursor()
-        cursor.execute("UPDATE employes SET actif = 0 WHERE id = ?", (employe_id,))
-        conn.commit()
-        conn.close()
-    
-    def modifier_employe(self, employe_id: int, nom: str = None, tel: str = None, poste: str = None, salaire: float = None):
-        """Modifie les informations d'un employé"""
-        conn = self.get_connection()
-        cursor = conn.cursor()
-        
-        updates = []
-        params = []
-        
-        if nom:
-            updates.append("nom = ?")
-            params.append(nom)
-        if tel:
-            updates.append("tel = ?")
-            params.append(tel)
-        if poste:
-            updates.append("poste = ?")
-            params.append(poste)
-        if salaire is not None:
-            updates.append("salaire = ?")
-            params.append(salaire)
-        
-        if updates:
-            params.append(employe_id)
-            query = f"UPDATE employes SET {', '.join(updates)} WHERE id = ?"
-            cursor.execute(query, params)
-            conn.commit()
-        
-        conn.close()
-    
-    # ===== POINTAGES =====
-    def enregistrer_pointage(self, user_id: int, type_pointage: str, notes: str = "") -> int:
-        """Enregistre un pointage (arrivée/départ)"""
-        conn = self.get_connection()
-        cursor = conn.cursor()
-        
-        now = datetime.now()
-        date_str = now.strftime("%Y-%m-%d")
-        heure_str = now.strftime("%H:%M")
-        
-        cursor.execute(
-            "INSERT INTO pointages (user_id, type, date, heure, notes) VALUES (?, ?, ?, ?, ?)",
-            (user_id, type_pointage, date_str, heure_str, notes)
-        )
-        pointage_id = cursor.lastrowid
-        conn.commit()
-        conn.close()
-        return pointage_id
-    
-    def get_pointages_jour(self, date_str: str) -> List[Dict]:
-        """Récupère tous les pointages d'une date"""
-        conn = self.get_connection()
-        cursor = conn.cursor()
-        cursor.execute("""
-            SELECT p.*, u.username, u.role
-            FROM pointages p
-            LEFT JOIN users u ON p.user_id = u.id
-            WHERE p.date = ?
-            ORDER BY p.heure
-        """, (date_str,))
-        pointages = [dict(row) for row in cursor.fetchall()]
-        conn.close()
-        return pointages
-    
-    def get_pointages_employe(self, user_id: int, date_debut: str = None, date_fin: str = None) -> List[Dict]:
-        """Récupère les pointages d'un employé sur une période"""
-        conn = self.get_connection()
-        cursor = conn.cursor()
-        
-        if date_debut and date_fin:
-            cursor.execute("""
-                SELECT * FROM pointages
-                WHERE user_id = ? AND date BETWEEN ? AND ?
-                ORDER BY date DESC, heure DESC
-            """, (user_id, date_debut, date_fin))
-        else:
-            cursor.execute("""
-                SELECT * FROM pointages
-                WHERE user_id = ?
-                ORDER BY date DESC, heure DESC
-                LIMIT 30
-            """, (user_id,))
-        
-        pointages = [dict(row) for row in cursor.fetchall()]
-        conn.close()
-        return pointages
-    
-    def calculer_heures_travail(self, user_id: int, date_str: str) -> Dict:
-        """Calcule les heures de travail d'un employé pour une date"""
-        conn = self.get_connection()
-        cursor = conn.cursor()
-        
-        cursor.execute("""
-            SELECT type, heure FROM pointages
-            WHERE user_id = ? AND date = ?
-            ORDER BY heure
-        """, (user_id, date_str))
-        
-        pointages = [dict(row) for row in cursor.fetchall()]
-        conn.close()
-        
-        if not pointages:
-            return {"heures_travail": 0, "arrivee": None, "depart": None}
-        
-        arrivee = next((p["heure"] for p in pointages if p["type"] == "arrivee"), None)
-        depart = next((p["heure"] for p in pointages if p["type"] == "depart"), None)
-        
-        heures_travail = 0
-        if arrivee and depart:
-            h_arr = datetime.strptime(arrivee, "%H:%M")
-            h_dep = datetime.strptime(depart, "%H:%M")
-            delta = h_dep - h_arr
-            heures_travail = delta.total_seconds() / 3600
-        
-        return {
-            "heures_travail": round(heures_travail, 2),
-            "arrivee": arrivee,
-            "depart": depart
-        }
