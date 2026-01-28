@@ -472,7 +472,7 @@ if user_role == "admin":  # PROPRIÉTAIRE
     with tabs[3]:
         st.header("📅 Gestion des Réservations")
         
-        sub_tabs = st.tabs(["➕ Nouvelle Réservation", "📋 Planning", "🔍 Rechercher"])
+        sub_tabs = st.tabs(["➕ Nouvelle Réservation", "📋 Planning", "✅ À Valider", "🔍 Rechercher"])
         
         with sub_tabs[0]:
             st.subheader("➕ Créer une Nouvelle Réservation")
@@ -571,6 +571,83 @@ if user_role == "admin":  # PROPRIÉTAIRE
                 st.info("Aucune réservation ce jour")
         
         with sub_tabs[2]:
+            st.subheader("✅ Services à Valider")
+            
+            st.info("💡 Validez la qualité des services terminés et payés")
+            
+            # Récupérer toutes les réservations payées mais pas validées
+            all_reservations = st.session_state.db.get_all_reservations()
+            reservations_a_valider = [r for r in all_reservations if r['statut'] == 'paye']
+            
+            if reservations_a_valider:
+                st.write(f"**{len(reservations_a_valider)} service(s) en attente de validation**")
+                st.markdown("---")
+                
+                for res in sorted(reservations_a_valider, key=lambda x: (x['date'], x['heure']), reverse=True):
+                    with st.expander(f"🚗 {res['client_nom']} - {res['service_nom']} | 📅 {res['date']} {res['heure']}"):
+                        col1, col2 = st.columns(2)
+                        
+                        with col1:
+                            st.write(f"**Client:** {res['client_nom']}")
+                            st.write(f"**Téléphone:** {res['client_tel']}")
+                            st.write(f"**Véhicule:** {res['vehicule']}")
+                            st.write(f"**Date:** {res['date']}")
+                            st.write(f"**Heure:** {res['heure']}")
+                        
+                        with col2:
+                            st.write(f"**Service:** {res['service_nom']}")
+                            st.write(f"**Prix:** {format_fcfa(res['montant'])}")
+                            st.write(f"**Montant payé:** {format_fcfa(res['montant_paye'])}")
+                            st.write(f"**Méthode:** {res.get('methode_paiement', 'N/A')}")
+                            st.success("💰 PAYÉ")
+                        
+                        if res.get('notes'):
+                            st.info(f"📝 Notes: {res['notes']}")
+                        
+                        st.markdown("---")
+                        
+                        col_a, col_b, col_c = st.columns([2, 2, 1])
+                        
+                        with col_a:
+                            if st.button(f"✅ Valider (Qualité OK)", key=f"valide_{res['id']}", type="primary", use_container_width=True):
+                                st.session_state.db.update_reservation_statut(res['id'], 'valide')
+                                st.success("✅ Service validé avec succès !")
+                                st.balloons()
+                                st.rerun()
+                        
+                        with col_b:
+                            if st.button(f"⚠️ Problème Qualité", key=f"probleme_{res['id']}", use_container_width=True):
+                                st.session_state[f"show_note_{res['id']}"] = True
+                        
+                        # Formulaire de note si problème
+                        if st.session_state.get(f"show_note_{res['id']}", False):
+                            with st.form(f"form_probleme_{res['id']}"):
+                                note_probleme = st.text_area("Décrivez le problème", placeholder="Ex: Client mécontent du résultat...")
+                                
+                                col_save, col_cancel = st.columns(2)
+                                with col_save:
+                                    if st.form_submit_button("💾 Enregistrer", use_container_width=True):
+                                        # Mettre à jour avec note
+                                        conn = st.session_state.db.get_connection()
+                                        cursor = conn.cursor()
+                                        cursor.execute(
+                                            "UPDATE reservations SET notes = ? WHERE id = ?",
+                                            (f"[PROBLÈME] {note_probleme}", res['id'])
+                                        )
+                                        conn.commit()
+                                        conn.close()
+                                        st.warning("⚠️ Problème enregistré - Service non validé")
+                                        st.session_state[f"show_note_{res['id']}"] = False
+                                        st.rerun()
+                                with col_cancel:
+                                    if st.form_submit_button("❌ Annuler", use_container_width=True):
+                                        st.session_state[f"show_note_{res['id']}"] = False
+                                        st.rerun()
+            else:
+                st.success("✅ Tous les services sont validés !")
+                st.info("Aucun service en attente de validation")
+        
+        with sub_tabs[3]:
             st.subheader("🔍 Rechercher une Réservation")
             st.info("Fonctionnalité de recherche à développer")
     
@@ -899,8 +976,31 @@ else:  # EMPLOYÉ
             reservations_today = st.session_state.db.get_reservations_by_date(date.today().isoformat())
             
             if reservations_today:
+                # Filtrer par statut
+                tab_attente = [r for r in reservations_today if r['statut'] == 'en_attente']
+                tab_en_cours = [r for r in reservations_today if r['statut'] == 'en_cours']
+                tab_termine = [r for r in reservations_today if r['statut'] == 'termine']
+                tab_paye = [r for r in reservations_today if r['statut'] == 'paye']
+                
+                st.write(f"**En attente:** {len(tab_attente)} | **En cours:** {len(tab_en_cours)} | **Terminé:** {len(tab_termine)} | **Payé:** {len(tab_paye)}")
+                st.markdown("---")
+                
                 for res in reservations_today:
-                    with st.expander(f"🚗 {res['client_nom']} - {res['service_nom']} ({res['heure']})"):
+                    # Badge de statut avec couleur
+                    if res['statut'] == 'en_attente':
+                        statut_badge = "🔵 En attente"
+                    elif res['statut'] == 'en_cours':
+                        statut_badge = "🟡 En cours"
+                    elif res['statut'] == 'termine':
+                        statut_badge = "🟢 Terminé"
+                    elif res['statut'] == 'paye':
+                        statut_badge = "💰 Payé"
+                    elif res['statut'] == 'valide':
+                        statut_badge = "✅ Validé"
+                    else:
+                        statut_badge = res['statut']
+                    
+                    with st.expander(f"🚗 {res['client_nom']} - {res['service_nom']} | {statut_badge}"):
                         col1, col2 = st.columns(2)
                         with col1:
                             st.write(f"**Client:** {res['client_nom']}")
@@ -909,7 +1009,52 @@ else:  # EMPLOYÉ
                         with col2:
                             st.write(f"**Service:** {res['service_nom']}")
                             st.write(f"**Prix:** {format_fcfa(res['montant'])}")
-                            st.write(f"**Statut:** {res['statut']}")
+                            st.write(f"**Heure:** {res['heure']}")
+                        
+                        st.markdown("---")
+                        
+                        # Actions selon le statut
+                        if res['statut'] == 'en_attente':
+                            if st.button(f"▶️ Démarrer le service", key=f"start_{res['id']}", use_container_width=True):
+                                st.session_state.db.update_reservation_statut(res['id'], 'en_cours')
+                                st.success("✅ Service démarré !")
+                                st.rerun()
+                        
+                        elif res['statut'] == 'en_cours':
+                            if st.button(f"✅ Marquer comme Terminé", key=f"finish_{res['id']}", use_container_width=True, type="primary"):
+                                st.session_state.db.update_reservation_statut(res['id'], 'termine')
+                                st.success("✅ Service terminé !")
+                                st.rerun()
+                        
+                        elif res['statut'] == 'termine':
+                            st.info("💡 Service terminé - En attente d'encaissement")
+                            
+                            col_a, col_b = st.columns(2)
+                            with col_a:
+                                methode = st.selectbox(
+                                    "Méthode de paiement",
+                                    ["Espèces", "Mobile Money", "Carte Bancaire"],
+                                    key=f"methode_{res['id']}"
+                                )
+                            with col_b:
+                                st.write("")
+                                st.write("")
+                                if st.button(f"💰 Encaisser {format_fcfa(res['montant'])}", key=f"pay_{res['id']}", type="primary", use_container_width=True):
+                                    # Enregistrer le paiement
+                                    st.session_state.db.ajouter_paiement(res['id'], res['montant'], methode)
+                                    # Mettre à jour le statut
+                                    st.session_state.db.update_reservation_statut(res['id'], 'paye')
+                                    # Mettre à jour les dépenses client
+                                    st.session_state.db.update_client_depense(res['client_id'], res['montant'])
+                                    st.success(f"✅ Paiement de {format_fcfa(res['montant'])} encaissé !")
+                                    st.balloons()
+                                    st.rerun()
+                        
+                        elif res['statut'] == 'paye':
+                            st.success("✅ Payé - En attente de validation par le propriétaire")
+                        
+                        elif res['statut'] == 'valide':
+                            st.success("✅✅ Service validé par le propriétaire")
             else:
                 st.info("Aucun service en cours aujourd'hui")
     
